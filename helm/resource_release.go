@@ -139,6 +139,11 @@ func resourceRelease() *schema.Resource {
 				Description: "List of values in raw yaml format to pass to helm.",
 				Elem:        &schema.Schema{Type: schema.TypeString},
 			},
+			"computed_values": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "Set of extra values, added to the chart. The sensitive data is cloaked. JSON encoded. Computed from `values` and `set*`.",
+			},
 			"set": {
 				Type:        schema.TypeSet,
 				Optional:    true,
@@ -420,11 +425,6 @@ func resourceRelease() *schema.Resource {
 							Type:        schema.TypeString,
 							Computed:    true,
 							Description: "The version number of the application being deployed.",
-						},
-						"values": {
-							Type:        schema.TypeString,
-							Computed:    true,
-							Description: "Set of extra values, added to the chart. The sensitive data is cloaked. JSON encoded.",
 						},
 					},
 				},
@@ -827,17 +827,30 @@ func resourceDiff(ctx context.Context, d *schema.ResourceDiff, meta interface{})
 		return err
 	}
 
+	values, err := getValues(d)
+	if err != nil {
+		return err
+	}
+	jsonValues, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+
+	err = d.SetNew("computed_values", string(jsonValues))
+	if err != nil {
+		return err
+	}
+
 	// Always recompute metadata if a new revision is going to be created
 	recomputeMetadataFields := []string{
 		"chart",
 		"repository",
-		"values",
-		"set",
-		"set_sensitive",
-		"set_list",
 	}
 	if d.HasChanges(recomputeMetadataFields...) {
-		d.SetNewComputed("metadata")
+		err = d.SetNewComputed("metadata")
+		if err != nil {
+			return err
+		}
 	}
 
 	if !useChartVersion(d.Get("chart").(string), d.Get("repository").(string)) {
@@ -1077,18 +1090,25 @@ func setReleaseAttributes(d *schema.ResourceData, r *release.Release, meta inter
 			return err
 		}
 		manifest := redactSensitiveValues(string(jsonManifest), d)
-		d.Set("manifest", manifest)
+		err = d.Set("manifest", manifest)
+		if err != nil {
+			return err
+		}
 	}
 
-	return d.Set("metadata", []map[string]interface{}{{
+	err := d.Set("metadata", []map[string]interface{}{{
 		"name":        r.Name,
 		"revision":    r.Version,
 		"namespace":   r.Namespace,
 		"chart":       r.Chart.Metadata.Name,
 		"version":     r.Chart.Metadata.Version,
 		"app_version": r.Chart.Metadata.AppVersion,
-		"values":      values,
 	}})
+	if err != nil {
+		return err
+	}
+
+	return d.Set("computed_values", values)
 }
 
 func cloakSetValues(config map[string]interface{}, d resourceGetter) {
